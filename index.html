@@ -2468,7 +2468,7 @@ function renderDecksPanel(){
           });
           const wr=games>0?Math.round(wins/games*100):0;
           const recordText=games>0?`${wins}–${games-wins} · ${wr}%`:'No games yet';
-          return`<div class="deck-entry"><span style="width:20px;height:20px;border-radius:50%;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;background:rgba(100,160,255,.1);border:1px solid rgba(100,160,255,.3);font-size:11px;">🔗</span><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(d.name)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div><span style="font-family:'Cinzel',serif;font-size:10px;color:var(--gold);white-space:nowrap;flex-shrink:0;">${recordText}</span></div>`;
+          return`<div class="deck-entry"><button class="deck-view-btn" onclick="openSyncedDeckInfo('${ESC(_deckSelPlayer)}','${ESC(d.id)}')" title="Deck info">i</button><span style="width:20px;height:20px;border-radius:50%;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;background:rgba(100,160,255,.1);border:1px solid rgba(100,160,255,.3);font-size:11px;margin-left:8px;">🔗</span><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(d.name)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div><span style="font-family:'Cinzel',serif;font-size:10px;color:var(--gold);white-space:nowrap;flex-shrink:0;">${recordText}</span></div>`;
         }).join('')}
       </div>`;
     }
@@ -2704,18 +2704,17 @@ function syncDeckStatsToFirestore(playerNames){
 
 /* ═══ DECK INFO POPUP ══════════════════════════════════ */
 
-function openDeckInfo(playerName, deckIdx){
-  const decks=S.decks&&S.decks[playerName];
-  if(!decks||!decks[deckIdx])return;
-  const d=decks[deckIdx];
-  const nm=deckName(d);const desc=deckDesc(d);const col=deckColor(d);
+// Shared by both local decks and Codex-synced decks so synced decks get the
+// exact same info popup (including description) instead of a stripped-down
+// view. matchName is whatever deckUsedInGame() would have recorded for this
+// deck (its name), used to tally this player's actual games/wins with it.
+function showDeckInfoModal(playerName, nm, desc, col, dt, matchName){
   const pl=pal(playerName);
 
   // Color icon
   const colorEl=document.getElementById('di-color');
   if(colorEl){colorEl.innerHTML=deckColorIcon(col,34);colorEl.style.background=pl.bg;colorEl.style.borderColor=pl.bar+'55';}
 
-  const dt=deckType(d);
   document.getElementById('di-name').textContent=nm;
   document.getElementById('di-owner').textContent=`${playerName}'s Deck${dt?' · '+dt:''}`;
 
@@ -2726,7 +2725,7 @@ function openDeckInfo(playerName, deckIdx){
   let wins=0,games=0;
   (S.log||[]).forEach(g=>{
     const usedDeck=deckUsedInGame(g,playerName);
-    if(usedDeck===nm){
+    if(usedDeck===matchName){
       games++;
       if(g.winner===playerName)wins++;
     }
@@ -2742,6 +2741,23 @@ function openDeckInfo(playerName, deckIdx){
   }
 
   document.getElementById('deck-info-overlay').classList.add('open');
+}
+
+function openDeckInfo(playerName, deckIdx){
+  const decks=S.decks&&S.decks[playerName];
+  if(!decks||!decks[deckIdx])return;
+  const d=decks[deckIdx];
+  showDeckInfoModal(playerName, deckName(d), deckDesc(d), deckColor(d), deckType(d), deckName(d));
+}
+
+// Codex-synced decks aren't in S.decks (see note above codexSyncedDecksFor),
+// so they're looked up by id from CodexSync instead of by array index.
+function openSyncedDeckInfo(playerName, deckId){
+  const synced=codexSyncedDecksFor(playerName);
+  const d=synced.find(x=>x.id===deckId);
+  if(!d) return;
+  const col=(d.colors&&d.colors.length)?d.colors.join(''):(d.colorless?'C':'');
+  showDeckInfoModal(playerName, d.name, d.description||'', col, d.buildType||'', d.name);
 }
 
 function closeDeckInfo(e){
