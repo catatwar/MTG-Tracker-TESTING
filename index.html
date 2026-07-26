@@ -1832,6 +1832,7 @@ var LZString=function(){var r=String.fromCharCode,o="ABCDEFGHIJKLMNOPQRSTUVWXYZa
     </div>
     <button class="secret-btn" id="codex-sync-signout-btn" style="width:100%;display:none;" onclick="codexSyncSignOut()">Disconnect</button>
     <div class="share-status" id="codex-sync-error" style="margin-top:6px;"></div>
+    <div id="codex-sync-write-status" style="font-family:'Cinzel',serif;font-size:9px;color:var(--tx3);margin-top:6px;letter-spacing:.02em;line-height:1.5;"></div>
   </div>
 
   <!-- ── SAVE & TRANSFER ── -->
@@ -2631,6 +2632,7 @@ function refreshCodexSyncSettingsUI(){
   const formEl=document.getElementById('codex-sync-form');
   const signoutBtn=document.getElementById('codex-sync-signout-btn');
   const errorEl=document.getElementById('codex-sync-error');
+  const writeStatusEl=document.getElementById('codex-sync-write-status');
   if(!statusEl||!formEl||!signoutBtn) return;
   const cs=window.CodexSync;
   if(cs&&cs.connectedEmail){
@@ -2643,6 +2645,17 @@ function refreshCodexSyncSettingsUI(){
     signoutBtn.style.display='none';
   }
   if(errorEl) errorEl.textContent=(cs&&cs.lastError)||'';
+  if(writeStatusEl){
+    if(cs&&cs.lastStatsError){
+      writeStatusEl.style.color='#e06060';
+      writeStatusEl.textContent=`⚠ Last win/loss sync failed: ${cs.lastStatsError}`;
+    }else if(cs&&cs.lastStatsSyncAt){
+      writeStatusEl.style.color='';
+      writeStatusEl.textContent=`✓ Win/loss last synced to Deck Codex at ${new Date(cs.lastStatsSyncAt).toLocaleTimeString()}`;
+    }else{
+      writeStatusEl.textContent='';
+    }
+  }
 }
 
 async function codexSyncSignIn(){
@@ -2672,6 +2685,12 @@ async function codexSyncSignOut(){
 function onCodexSyncChange(){
   refreshCodexSyncSettingsUI();
   reconcileLocalDecksWithCodex();
+  // Recompute every player's synced-deck stats here too, not just after a
+  // new game — otherwise a deck's *past* history never reaches Codex until
+  // another game happens to get logged with it. This runs whenever sync
+  // data changes (connecting, a deck just getting pushed/linked, etc.), so
+  // existing history gets backfilled as soon as a deck becomes linked.
+  syncDeckStatsToFirestore(S.players);
   const decksPanel=document.getElementById('panel-decks');
   if(decksPanel&&decksPanel.classList.contains('active')) renderDecksPanel();
 }
@@ -5579,6 +5598,8 @@ function epRemoveCancel(){
     membersByLowerName = {};
     window.CodexSync.ready = false;
     window.CodexSync.decksByOwner = {};
+    window.CodexSync.lastStatsError = null;
+    window.CodexSync.lastStatsSyncAt = null;
     notify();
   }
 
@@ -5639,6 +5660,8 @@ function epRemoveCancel(){
     connecting: false,
     connectedEmail: null,
     lastError: null,
+    lastStatsError: null,
+    lastStatsSyncAt: null,
     decksByOwner: {},
     decksForPlayer(name){
       return this.decksByOwner[(name || '').trim().toLowerCase()] || [];
@@ -5661,12 +5684,23 @@ function epRemoveCancel(){
       await signOut(auth);
     },
     async pushDeckStats(deckId, wins, losses){
-      if(!groupDecksCol) return;
+      if(!groupDecksCol){
+        this.lastStatsError = 'Not connected to a Deck Codex group.';
+        notify();
+        return;
+      }
       try{
         await updateDoc(doc(groupDecksCol, deckId), { wins, losses });
+        this.lastStatsError = null;
+        this.lastStatsSyncAt = Date.now();
       }catch(e){
+        // e.code is Firestore's own error code (e.g. 'permission-denied') —
+        // surfaced in Settings so a failed push is visible without opening
+        // devtools, instead of only ever reaching the console.
+        this.lastStatsError = (e && (e.code || e.message)) || String(e);
         console.error('Could not push deck stats to Deck Codex', e);
       }
+      notify();
     },
     // Whether this signed-in account is allowed to push a new deck
     // attributed to playerName — true for the leader (any real member),
