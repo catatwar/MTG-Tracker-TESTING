@@ -2437,42 +2437,35 @@ function renderDecksPanel(){
   if(decks.length===0&&syncedDecks.length===0){
     listWrap.innerHTML='<div class="deck-list"><div class="deck-empty">No decks added yet.</div></div>';
   } else {
-    let html='';
-    if(decks.length){
-      html+=`<div class="deck-list">${decks.map((d,i)=>{
-        const nm=deckName(d);const col=deckColor(d);
-        const pl=pal(_deckSelPlayer);
-        const pips=col&&col.length?[...col].map(id=>{const c=DECK_COLORS.find(x=>x.id===id);return c?`<span style="display:inline-flex;flex-shrink:0;">${c.render(20)}</span>`:''}).join(''):`<span style="font-size:16px">🃏</span>`;
-        const rmStep=_deckRemoveStep[i]||0;
-        const rmBtns=rmStep===0
-          ? `<button class="deck-remove-btn" onclick="removeDeck(${i})" title="Remove deck">−</button>`
-          : rmStep===1
-            ? `<span style="font-family:'Cinzel',serif;font-size:9px;color:#e06060;letter-spacing:.02em;">Remove?</span><button onclick="removeDeck(${i})" style="padding:3px 7px;border-radius:5px;border:1px solid rgba(200,60,60,.5);background:rgba(200,60,60,.1);color:#ff6060;font-family:'Cinzel',serif;font-size:9px;font-weight:700;cursor:pointer;">Yes</button><button onclick="cancelRemoveDeck()" style="padding:3px 7px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--tx3);font-family:'Cinzel',serif;font-size:9px;cursor:pointer;">No</button>`
-            : `<span style="font-family:'Cinzel',serif;font-size:9px;color:#ff4040;font-weight:700;letter-spacing:.02em;">Sure?</span><button onclick="removeDeck(${i})" style="padding:3px 7px;border-radius:5px;border:1px solid rgba(200,30,30,.7);background:rgba(200,30,30,.2);color:#ff3030;font-family:'Cinzel',serif;font-size:9px;font-weight:700;cursor:pointer;">Delete</button><button onclick="cancelRemoveDeck()" style="padding:3px 7px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--tx3);font-family:'Cinzel',serif;font-size:9px;cursor:pointer;">Cancel</button>`;
-        const editBtn=`<button onclick="openEditDeck(${i})" title="Edit deck" style="width:30px;height:30px;border-radius:50%;border:2px solid rgba(212,168,67,.35);background:rgba(212,168,67,.08);color:var(--gold);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;line-height:1;padding:0;flex-shrink:0;-webkit-tap-highlight-color:transparent;">✎</button>`;
-        return`<div class="deck-entry" style="flex-wrap:${rmStep>0?'wrap':'nowrap'};gap:${rmStep>0?'6px':'0'}"><button class="deck-view-btn" onclick="openDeckInfo('${ESC(_deckSelPlayer)}',${i})" title="Deck info">i</button><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(nm)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div><div style="display:flex;gap:5px;align-items:center;flex-shrink:0">${editBtn}${rmBtns}</div></div>`;
-      }).join('')}</div>`;
-    }
-    // Synced decks are read-only here on purpose — Deck Codex owns their
+    // One combined list: locally-added decks (editable) and Deck
+    // Codex-synced decks (read-only — Codex owns their
     // name/description/colors/type, this tracker only ever writes their
-    // wins/losses (via game logging), so there's no edit/remove control.
-    if(syncedDecks.length){
-      html+=`<div class="deck-list" style="margin-top:${decks.length?'14px':'0'};">
-        <div class="deck-form-lbl" style="margin-bottom:6px;">🔗 Synced from Deck Codex</div>
-        ${syncedDecks.map(d=>{
-          const pips=d.colors&&d.colors.length?d.colors.map(id=>{const c=DECK_COLORS.find(x=>x.id===id);return c?`<span style="display:inline-flex;flex-shrink:0;">${c.render(20)}</span>`:''}).join(''):`<span style="font-size:16px">🃏</span>`;
-          let wins=0,games=0;
-          (S.log||[]).forEach(g=>{
-            const usedDeck=deckUsedInGame(g,_deckSelPlayer);
-            if(usedDeck===d.name){ games++; if(g.winner===_deckSelPlayer) wins++; }
-          });
-          const wr=games>0?Math.round(wins/games*100):0;
-          const recordText=games>0?`${wins}–${games-wins} · ${wr}%`:'No games yet';
-          return`<div class="deck-entry"><button class="deck-view-btn" onclick="openSyncedDeckInfo('${ESC(_deckSelPlayer)}','${ESC(d.id)}')" title="Deck info">i</button><span style="width:20px;height:20px;border-radius:50%;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;background:rgba(100,160,255,.1);border:1px solid rgba(100,160,255,.3);font-size:11px;margin-left:8px;">🔗</span><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(d.name)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div><span style="font-family:'Cinzel',serif;font-size:10px;color:var(--gold);white-space:nowrap;flex-shrink:0;">${recordText}</span></div>`;
-        }).join('')}
-      </div>`;
-    }
-    listWrap.innerHTML=html;
+    // wins/losses back) sit together as one list, with synced entries
+    // marked by a small 🔗 badge instead of living in a separate section.
+    const localRows=decks.map((d,i)=>{
+      const nm=deckName(d);const col=deckColor(d);
+      const pips=col&&col.length?[...col].map(id=>{const c=DECK_COLORS.find(x=>x.id===id);return c?`<span style="display:inline-flex;flex-shrink:0;">${c.render(20)}</span>`:''}).join(''):`<span style="font-size:16px">🃏</span>`;
+      const rmStep=_deckRemoveStep[i]||0;
+      const rmBtns=rmStep===0
+        ? `<button class="deck-remove-btn" onclick="removeDeck(${i})" title="Remove deck">−</button>`
+        : rmStep===1
+          ? `<span style="font-family:'Cinzel',serif;font-size:9px;color:#e06060;letter-spacing:.02em;">Remove?</span><button onclick="removeDeck(${i})" style="padding:3px 7px;border-radius:5px;border:1px solid rgba(200,60,60,.5);background:rgba(200,60,60,.1);color:#ff6060;font-family:'Cinzel',serif;font-size:9px;font-weight:700;cursor:pointer;">Yes</button><button onclick="cancelRemoveDeck()" style="padding:3px 7px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--tx3);font-family:'Cinzel',serif;font-size:9px;cursor:pointer;">No</button>`
+          : `<span style="font-family:'Cinzel',serif;font-size:9px;color:#ff4040;font-weight:700;letter-spacing:.02em;">Sure?</span><button onclick="removeDeck(${i})" style="padding:3px 7px;border-radius:5px;border:1px solid rgba(200,30,30,.7);background:rgba(200,30,30,.2);color:#ff3030;font-family:'Cinzel',serif;font-size:9px;font-weight:700;cursor:pointer;">Delete</button><button onclick="cancelRemoveDeck()" style="padding:3px 7px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--tx3);font-family:'Cinzel',serif;font-size:9px;cursor:pointer;">Cancel</button>`;
+      const editBtn=`<button onclick="openEditDeck(${i})" title="Edit deck" style="width:30px;height:30px;border-radius:50%;border:2px solid rgba(212,168,67,.35);background:rgba(212,168,67,.08);color:var(--gold);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;line-height:1;padding:0;flex-shrink:0;-webkit-tap-highlight-color:transparent;">✎</button>`;
+      return`<div class="deck-entry" style="flex-wrap:${rmStep>0?'wrap':'nowrap'};gap:${rmStep>0?'6px':'0'}"><button class="deck-view-btn" onclick="openDeckInfo('${ESC(_deckSelPlayer)}',${i})" title="Deck info">i</button><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(nm)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div><div style="display:flex;gap:5px;align-items:center;flex-shrink:0">${editBtn}${rmBtns}</div></div>`;
+    }).join('');
+    const syncedRows=syncedDecks.map(d=>{
+      const pips=d.colors&&d.colors.length?d.colors.map(id=>{const c=DECK_COLORS.find(x=>x.id===id);return c?`<span style="display:inline-flex;flex-shrink:0;">${c.render(20)}</span>`:''}).join(''):`<span style="font-size:16px">🃏</span>`;
+      let wins=0,games=0;
+      (S.log||[]).forEach(g=>{
+        const usedDeck=deckUsedInGame(g,_deckSelPlayer);
+        if(usedDeck===d.name){ games++; if(g.winner===_deckSelPlayer) wins++; }
+      });
+      const wr=games>0?Math.round(wins/games*100):0;
+      const recordText=games>0?`${wins} – ${games-wins} (${wr}%)`:'No games yet';
+      return`<div class="deck-entry"><button class="deck-view-btn" onclick="openSyncedDeckInfo('${ESC(_deckSelPlayer)}','${ESC(d.id)}')" title="Deck info">i</button><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span title="Synced from Deck Codex" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;flex-shrink:0;background:rgba(100,160,255,.15);border:1px solid rgba(100,160,255,.35);font-size:9px;">🔗</span><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(d.name)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div><span style="font-family:'Cinzel',serif;font-size:10px;color:var(--gold);white-space:nowrap;flex-shrink:0;">${recordText}</span></div>`;
+    }).join('');
+    listWrap.innerHTML=`<div class="deck-list">${localRows}${syncedRows}</div>`;
   }
 
   // Render color row
