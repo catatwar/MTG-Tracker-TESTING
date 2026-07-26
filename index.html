@@ -2437,23 +2437,26 @@ function renderDecksPanel(){
   if(decks.length===0&&syncedDecks.length===0){
     listWrap.innerHTML='<div class="deck-list"><div class="deck-empty">No decks added yet.</div></div>';
   } else {
-    // One combined list: locally-added decks (editable) and Deck
-    // Codex-synced decks (read-only — Codex owns their
-    // name/description/colors/type, this tracker only ever writes their
-    // wins/losses back) sit together as one list, with synced entries
-    // marked by a small 🔗 badge instead of living in a separate section.
-    const localRows=decks.map((d,i)=>{
-      const nm=deckName(d);const col=deckColor(d);
-      const pips=col&&col.length?[...col].map(id=>{const c=DECK_COLORS.find(x=>x.id===id);return c?`<span style="display:inline-flex;flex-shrink:0;">${c.render(20)}</span>`:''}).join(''):`<span style="font-size:16px">🃏</span>`;
-      const rmStep=_deckRemoveStep[i]||0;
-      const rmBtns=rmStep===0
-        ? `<button class="deck-remove-btn" onclick="removeDeck(${i})" title="Remove deck">−</button>`
-        : rmStep===1
-          ? `<span style="font-family:'Cinzel',serif;font-size:9px;color:#e06060;letter-spacing:.02em;">Remove?</span><button onclick="removeDeck(${i})" style="padding:3px 7px;border-radius:5px;border:1px solid rgba(200,60,60,.5);background:rgba(200,60,60,.1);color:#ff6060;font-family:'Cinzel',serif;font-size:9px;font-weight:700;cursor:pointer;">Yes</button><button onclick="cancelRemoveDeck()" style="padding:3px 7px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--tx3);font-family:'Cinzel',serif;font-size:9px;cursor:pointer;">No</button>`
-          : `<span style="font-family:'Cinzel',serif;font-size:9px;color:#ff4040;font-weight:700;letter-spacing:.02em;">Sure?</span><button onclick="removeDeck(${i})" style="padding:3px 7px;border-radius:5px;border:1px solid rgba(200,30,30,.7);background:rgba(200,30,30,.2);color:#ff3030;font-family:'Cinzel',serif;font-size:9px;font-weight:700;cursor:pointer;">Delete</button><button onclick="cancelRemoveDeck()" style="padding:3px 7px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--tx3);font-family:'Cinzel',serif;font-size:9px;cursor:pointer;">Cancel</button>`;
-      const editBtn=`<button onclick="openEditDeck(${i})" title="Edit deck" style="width:30px;height:30px;border-radius:50%;border:2px solid rgba(212,168,67,.35);background:rgba(212,168,67,.08);color:var(--gold);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;line-height:1;padding:0;flex-shrink:0;-webkit-tap-highlight-color:transparent;">✎</button>`;
-      return`<div class="deck-entry" style="flex-wrap:${rmStep>0?'wrap':'nowrap'};gap:${rmStep>0?'6px':'0'}"><button class="deck-view-btn" onclick="openDeckInfo('${ESC(_deckSelPlayer)}',${i})" title="Deck info">i</button><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(nm)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div><div style="display:flex;gap:5px;align-items:center;flex-shrink:0">${editBtn}${rmBtns}</div></div>`;
-    }).join('');
+    // One combined list: locally-added decks and Deck Codex-synced decks
+    // sit together, with synced entries marked by a small 🔗 badge instead
+    // of living in a separate section. Deck management (add/edit/delete)
+    // happens in Deck Codex now — this view is read-only, so there's no
+    // edit/remove control on either kind of row.
+    // Defensive de-dupe: a local deck sharing a name (case-insensitive)
+    // with an already-synced deck is skipped here too, in case it hasn't
+    // been cleaned out of local storage yet by reconcileLocalDecksWithCodex.
+    const syncedNameSet=new Set(syncedDecks.map(d=>(d.name||'').trim().toLowerCase()));
+    const localRows=decks
+      .map((d,i)=>({d,i}))
+      .filter(({d})=>{
+        const nm=deckName(d);
+        return !(nm && syncedNameSet.has(nm.trim().toLowerCase()));
+      })
+      .map(({d,i})=>{
+        const nm=deckName(d);const col=deckColor(d);
+        const pips=col&&col.length?[...col].map(id=>{const c=DECK_COLORS.find(x=>x.id===id);return c?`<span style="display:inline-flex;flex-shrink:0;">${c.render(20)}</span>`:''}).join(''):`<span style="font-size:16px">🃏</span>`;
+        return`<div class="deck-entry"><button class="deck-view-btn" onclick="openDeckInfo('${ESC(_deckSelPlayer)}',${i})" title="Deck info">i</button><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0 10px"><span class="deck-entry-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ESC(nm)}</span><span style="display:inline-flex;align-items:center;gap:3px;flex-shrink:0">${pips}</span></div></div>`;
+      }).join('');
     const syncedRows=syncedDecks.map(d=>{
       const pips=d.colors&&d.colors.length?d.colors.map(id=>{const c=DECK_COLORS.find(x=>x.id===id);return c?`<span style="display:inline-flex;flex-shrink:0;">${c.render(20)}</span>`:''}).join(''):`<span style="font-size:16px">🃏</span>`;
       let wins=0,games=0;
@@ -2677,29 +2680,48 @@ function onCodexSyncChange(){
 // This is the other direction: any deck that only exists in this Tracker's
 // local storage (typed in directly, or restored from a Save Code) but has
 // no match on Deck Codex yet gets created there. Matched per-player by deck
-// name (case-insensitive) so it never double-creates something that's
-// already synced. Silently skips decks it doesn't have permission to push
-// (e.g. someone else's locally-added deck, if this signed-in account isn't
-// the leader) rather than nagging about it on every sync tick.
+// name (case-insensitive). Once a local deck is confirmed to exist on Codex
+// — either just pushed here, or it already existed there — the local copy
+// is dropped, since keeping both around is what caused two entries for the
+// same deck to show up. Silently skips (leaves local, doesn't nag) any deck
+// it doesn't have permission to push, e.g. someone else's locally-added
+// deck when this signed-in account isn't the leader.
 let _reconcilingCodexDecks=false;
 async function reconcileLocalDecksWithCodex(){
   if(_reconcilingCodexDecks) return;
   if(!window.CodexSync||!window.CodexSync.ready) return;
   _reconcilingCodexDecks=true;
+  let changed=false;
   try{
     for(const playerName of Object.keys(S.decks||{})){
       const localList=S.decks[playerName]||[];
       if(!localList.length) continue;
-      if(!window.CodexSync.canPushFor(playerName)) continue;
+      if(!window.CodexSync.canPushFor(playerName)){
+        continue; // can't push, and can't confirm Codex state either — leave local as-is
+      }
       const syncedNames=new Set(codexSyncedDecksFor(playerName).map(d=>(d.name||'').trim().toLowerCase()));
+      const kept=[];
       for(const d of localList){
         const nm=deckName(d);
-        if(!nm||syncedNames.has(nm.trim().toLowerCase())) continue;
+        const key=(nm||'').trim().toLowerCase();
+        if(nm && syncedNames.has(key)){
+          // Already on Codex (from an earlier push, or added there
+          // directly) — the local copy is now a redundant duplicate.
+          changed=true;
+          continue;
+        }
+        if(!nm){ kept.push(d); continue; }
         try{
           await window.CodexSync.pushNewDeck(playerName, d);
-        }catch(e){ console.error('Could not push local deck to Deck Codex', e); }
+          changed=true; // now lives on Codex — drop the local copy below
+        }catch(e){
+          console.error('Could not push local deck to Deck Codex', e);
+          kept.push(d); // push failed, so keep the only copy that exists
+        }
       }
+      if(kept.length !== localList.length) S.decks[playerName]=kept;
     }
+    if(changed){ save(); renderDecksPanel(); }
   } finally {
     _reconcilingCodexDecks=false;
   }
