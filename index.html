@@ -2601,6 +2601,7 @@ function confirmAddDeck(){
   const confirmBtn=document.getElementById('deck-confirm-btn');
   if(confirmBtn) confirmBtn.textContent='Add Deck';
   renderDecksPanel();
+  if(typeof reconcileLocalDecksWithCodex === 'function') reconcileLocalDecksWithCodex();
 }
 
 let _deckEditIdx=-1; // -1 = not editing, else index of deck being edited
@@ -2674,8 +2675,41 @@ async function codexSyncSignOut(){
 // (if it's the currently visible tab) live without a page reload.
 function onCodexSyncChange(){
   refreshCodexSyncSettingsUI();
+  reconcileLocalDecksWithCodex();
   const decksPanel=document.getElementById('panel-decks');
   if(decksPanel&&decksPanel.classList.contains('active')) renderDecksPanel();
+}
+
+// The Codex-decks-show-up-here direction is automatic (codexSyncedDecksFor).
+// This is the other direction: any deck that only exists in this Tracker's
+// local storage (typed in directly, or restored from a Save Code) but has
+// no match on Deck Codex yet gets created there. Matched per-player by deck
+// name (case-insensitive) so it never double-creates something that's
+// already synced. Silently skips decks it doesn't have permission to push
+// (e.g. someone else's locally-added deck, if this signed-in account isn't
+// the leader) rather than nagging about it on every sync tick.
+let _reconcilingCodexDecks=false;
+async function reconcileLocalDecksWithCodex(){
+  if(_reconcilingCodexDecks) return;
+  if(!window.CodexSync||!window.CodexSync.ready) return;
+  _reconcilingCodexDecks=true;
+  try{
+    for(const playerName of Object.keys(S.decks||{})){
+      const localList=S.decks[playerName]||[];
+      if(!localList.length) continue;
+      if(!window.CodexSync.canPushFor(playerName)) continue;
+      const syncedNames=new Set(codexSyncedDecksFor(playerName).map(d=>(d.name||'').trim().toLowerCase()));
+      for(const d of localList){
+        const nm=deckName(d);
+        if(!nm||syncedNames.has(nm.trim().toLowerCase())) continue;
+        try{
+          await window.CodexSync.pushNewDeck(playerName, d);
+        }catch(e){ console.error('Could not push local deck to Deck Codex', e); }
+      }
+    }
+  } finally {
+    _reconcilingCodexDecks=false;
+  }
 }
 
 // Recomputes wins/losses for this player's synced decks from the full
@@ -3279,6 +3313,8 @@ const merged={...fresh};
 Object.keys(raw).forEach(k=>{if(k in fresh||typeof raw[k]==='object')merged[k]=raw[k]});
 
 S=migrateState(merged);save();render();
+
+if(typeof reconcileLocalDecksWithCodex === 'function') reconcileLocalDecksWithCodex();
 
 $('paste-area-wrap').style.display='none';
 
@@ -5475,7 +5511,7 @@ function epRemoveCancel(){
     signInWithEmailAndPassword, signOut
   } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
   import {
-    getFirestore, collection, collectionGroup, doc, query, where, getDocs, onSnapshot, updateDoc
+    getFirestore, collection, collectionGroup, doc, query, where, getDocs, getDoc, setDoc, onSnapshot, updateDoc
   } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
   // Same Firebase project Deck Codex uses — this is what makes the two
@@ -5499,6 +5535,18 @@ function epRemoveCancel(){
 
   let groupDecksCol = null;
   let unsubscribeDecks = null;
+  let currentGroupId = null;
+  let myUid = null;
+  let isLeaderFlag = false;
+  // Lowercased Deck Codex display name -> { uid, displayName }. Lets a
+  // locally-added Tracker deck (keyed only by player name, a plain string)
+  // be matched to the actual Codex member it belongs to when pushing it up.
+  let membersByLowerName = {};
+
+  // Tracker's local deck-type options don't share Codex's vocabulary
+  // 1:1 — closest equivalents are mapped here; anything else maps to null
+  // (Codex allows an unset buildType).
+  const TRACKER_TO_CODEX_BUILDTYPE = { Precon: 'precon', Edited: 'edited', Custom: 'homemade' };
 
   function notify(){
     // Defined on the plain-script side, once page scripts have run. Guarded
@@ -5510,6 +5558,10 @@ function epRemoveCancel(){
   function stopSyncing(){
     if(unsubscribeDecks){ unsubscribeDecks(); unsubscribeDecks = null; }
     groupDecksCol = null;
+    currentGroupId = null;
+    myUid = null;
+    isLeaderFlag = false;
+    membersByLowerName = {};
     window.CodexSync.ready = false;
     window.CodexSync.decksByOwner = {};
     notify();
@@ -5517,6 +5569,7 @@ function epRemoveCancel(){
 
   async function startSyncing(uid){
     try{
+      myUid = uid;
       // Same "which group is this user in" lookup Deck Codex itself uses —
       // finds their membership record without needing a separate index
       // that could drift out of sync.
@@ -5524,7 +5577,28 @@ function epRemoveCancel(){
       const snap = await getDocs(q);
       if(snap.empty){ stopSyncing(); return; }
       const groupId = snap.docs[0].ref.parent.parent.id;
+      currentGroupId = groupId;
       groupDecksCol = collection(db, 'groups', groupId, 'decks');
+
+      // Needed so a locally-added deck can be attributed to the right
+      // member (and so we know whether this signed-in account is even
+      // allowed to push a deck on someone else's behalf — only the leader
+      // can, same rule Deck Codex itself enforces server-side).
+      try{
+        const groupSnap = await getDoc(doc(db, 'groups', groupId));
+        isLeaderFlag = !!(groupSnap.exists() && groupSnap.data().leaderUid === uid);
+      }catch(e){ isLeaderFlag = false; }
+      try{
+        const membersSnap = await getDocs(collection(db, 'groups', groupId, 'members'));
+        const map = {};
+        membersSnap.forEach(m=>{
+          const data = m.data();
+          const key = (data.displayName || '').trim().toLowerCase();
+          if(key) map[key] = { uid: data.uid, displayName: data.displayName };
+        });
+        membersByLowerName = map;
+      }catch(e){ membersByLowerName = {}; }
+
       unsubscribeDecks = onSnapshot(groupDecksCol, (decksSnap)=>{
         const byOwner = {};
         decksSnap.forEach(d=>{
@@ -5578,6 +5652,49 @@ function epRemoveCancel(){
       }catch(e){
         console.error('Could not push deck stats to Deck Codex', e);
       }
+    },
+    // Whether this signed-in account is allowed to push a new deck
+    // attributed to playerName — true for the leader (any real member),
+    // true for a regular member pushing their own name, false otherwise.
+    // Mirrors the create rule Deck Codex's own Firestore rules enforce, so
+    // this never attempts a write that would just be denied anyway.
+    canPushFor(playerName){
+      const entry = membersByLowerName[(playerName || '').trim().toLowerCase()];
+      if(!entry) return false;
+      return isLeaderFlag || entry.uid === myUid;
+    },
+    // Creates a brand-new deck doc in Deck Codex for a deck that currently
+    // only exists in this Tracker's local storage, attributed to whichever
+    // group member playerName matches. Filed into that member's personal
+    // collection, same as adding it directly in Deck Codex would do.
+    async pushNewDeck(playerName, localDeck){
+      if(!groupDecksCol || !currentGroupId) throw new Error('Not connected to a Deck Codex group.');
+      const entry = membersByLowerName[(playerName || '').trim().toLowerCase()];
+      if(!entry) throw new Error(`${playerName} isn't a Deck Codex member of this group yet.`);
+      if(!isLeaderFlag && entry.uid !== myUid) throw new Error("Only the group leader can push another player's deck.");
+
+      const isObj = typeof localDeck === 'object' && localDeck !== null;
+      const colorStr = isObj ? (localDeck.color || '') : '';
+      const colors = [...colorStr].filter(c => 'WUBRG'.includes(c));
+      const rawType = isObj ? (localDeck.deckType || '') : '';
+      const id = 'd_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+      const deckDoc = {
+        id,
+        name: (isObj ? localDeck.name : localDeck) || 'Untitled Deck',
+        description: isObj ? (localDeck.description || '') : '',
+        colors,
+        colorless: colors.length === 0,
+        collectionId: 'personal_' + entry.uid,
+        seriesId: null,
+        buildType: TRACKER_TO_CODEX_BUILDTYPE[rawType] || null,
+        ownerUid: entry.uid,
+        ownerName: entry.displayName,
+        wins: 0,
+        losses: 0,
+        createdAt: Date.now()
+      };
+      await setDoc(doc(groupDecksCol, id), deckDoc);
+      return deckDoc;
     }
   };
 
