@@ -2758,14 +2758,20 @@ function syncDeckStatsToFirestore(playerNames){
     seen.add(playerName);
     const synced=codexSyncedDecksFor(playerName);
     synced.forEach(sd=>{
-      let wins=0,games=0;
+      let wins=0,games=0,lastPlayedAt=null;
       (S.log||[]).forEach(g=>{
         const usedDeck=deckUsedInGame(g,playerName);
-        if(usedDeck===sd.name){ games++; if(g.winner===playerName) wins++; }
+        if(usedDeck===sd.name){
+          games++;
+          if(g.winner===playerName) wins++;
+          if(g.ts && (!lastPlayedAt || g.ts>lastPlayedAt)) lastPlayedAt=g.ts;
+        }
       });
       const losses=games-wins;
-      if(sd.wins===wins&&sd.losses===losses) return; // no change, skip the write
-      window.CodexSync.pushDeckStats(sd.id, wins, losses);
+      // no change, skip the write (lastPlayedAt only ever moves forward, so
+      // comparing it here too catches a re-log of an older/undone game).
+      if(sd.wins===wins&&sd.losses===losses&&(sd.lastPlayedAt||null)===(lastPlayedAt||null)) return;
+      window.CodexSync.pushDeckStats(sd.id, wins, losses, lastPlayedAt);
     });
   });
 }
@@ -5683,14 +5689,19 @@ function epRemoveCancel(){
     async signOutNow(){
       await signOut(auth);
     },
-    async pushDeckStats(deckId, wins, losses){
+    async pushDeckStats(deckId, wins, losses, lastPlayedAt){
       if(!groupDecksCol){
         this.lastStatsError = 'Not connected to a Deck Codex group.';
         notify();
         return;
       }
       try{
-        await updateDoc(doc(groupDecksCol, deckId), { wins, losses });
+        const fields = { wins, losses };
+        // Only ever included when the caller actually has a value to send —
+        // keeps this call backward-compatible with any other call site that
+        // still calls pushDeckStats with just (deckId, wins, losses).
+        if(lastPlayedAt !== undefined) fields.lastPlayedAt = lastPlayedAt;
+        await updateDoc(doc(groupDecksCol, deckId), fields);
         this.lastStatsError = null;
         this.lastStatsSyncAt = Date.now();
       }catch(e){
